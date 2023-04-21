@@ -4,6 +4,17 @@ library(GEOquery)
 library(gt)
 library(gtsummary)
 library(pheatmap)
+library(limma)
+library(illuminaHumanv4.db)
+library(survminer)
+library(caret)
+library(randomForest)
+library(gbm)
+library(kknn)
+library(glmnet)
+library(mice)
+library(prophet)
+library(reshape2)
 
 
 #setting working directory:
@@ -71,7 +82,7 @@ class(gse70769[[1]])
 #SWEET!
 
 #obtaining gene expression matrix from gse70769:
-exprsdat <- exprs(gse70769[[1]])
+exprsdat <- Biobase::exprs(gse70769[[1]])
 
 
 #I suspect this data is already normalized (which is great)
@@ -107,3 +118,54 @@ exprsdat_cormtest <- cor.mtest(exprsdat)
 all((rowSums(exprsdat_cormtest$p) > 0) == FALSE) # all true so no outliers
 #so from here, I will perform differential gene expression
 
+
+
+#before I perform the differential gene expression analysis, I want to see
+#if there is a difference in biochemical recurrent rate between Gleason
+#7=3+4 vs 7=4+3 prostate cancer cases:
+pheno_table_gleason7 <- pheno %>% dplyr::select(bcrRelapse, tumorGleason) %>% 
+  filter((tumorGleason == "7=3+4" | tumorGleason == "7=4+3") & (bcrRelapse != "N/A")) %>%
+  group_by(bcrRelapse, tumorGleason) %>%
+  summarize(n = n())
+
+pheno_pivot_table_gleason7 <- dcast(data = pheno_table
+                           ,formula = bcrRelapse ~ tumorGleason
+                           ,fun.aggregate=sum
+                           ,value.var="n")
+
+#performing chi-square on the values:
+chisq.test(x = pheno_pivot_table_gleason7[,-1])
+#Pearson's Chi-squared test with Yates' continuity correction
+#
+#data:  pheno_pivot_table_gleason7[, -1]
+#X-squared = 1.0486, df = 1, p-value = 0.3058
+#WooHoo! It's not significant!!!! So Gleason is probably NOT a confounding factor
+
+
+#now I want to create a pheno table with just the gleason7 samples:
+pheno_gleason7 <- pheno %>% dplyr::select(bcrRelapse, tumorGleason) %>% 
+  filter((tumorGleason == "7=3+4" | tumorGleason == "7=4+3") & (bcrRelapse != "N/A"))
+
+#selecting only the samples with Gleason 7:
+selectedSamples <- rownames(pheno_gleason7)
+selectedSamples_idx <- which(colnames(exprsdat) %in% selectedSamples)
+exprsdat_gleason7 <- exprsdat[,selectedSamples_idx]
+selectedSamples == colnames(exprsdat_gleason7)
+
+#now perform differential expression analysis:
+gleason7 <- factor(pheno_gleason7$tumorGleason, levels = c("7=3+4", "7=4+3"))
+design <- model.matrix(~0+gleason7)
+colnames(design) <- c("gleason3plus4", "gleason4plus3")
+fit <- lmFit(exprsdat_gleason7, design)
+contrast.matrix <- makeContrasts("gleason3plus4 - gleason4plus3", levels=design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+topTable(fit2, coef=1, adjust="BH")
+#there are two probes that are significant, ILMN_2337740  and ILMN_1720965 
+#both probes measure the expression of TULP4 gene
+#I need to write the code to prove this but I just did a Google search
+#TULP4 is involved in protein ubiquitination. I dn't recall seeing any
+#studies involved in protein ubiquitination AND prostate cancer. Interesting
+#angle.
+
+#I need to do a boxplot of this gene in 3+4 vs 4+3 prostate cancer cases.
